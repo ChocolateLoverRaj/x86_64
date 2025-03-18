@@ -1,14 +1,14 @@
 //! Provides a type for the task state segment structure.
 
 use crate::VirtAddr;
-use core::mem::size_of;
+use core::mem::{offset_of, size_of};
 
 /// In 64-bit mode the TSS holds information that is not
 /// directly related to the task-switch mechanism,
 /// but is used for stack switching when an interrupt or exception occurs.
 #[derive(Debug, Clone, Copy)]
 #[repr(C, packed(4))]
-pub struct TaskStateSegment {
+pub struct TaskStateSegment<const N: usize> {
     reserved_1: u32,
     /// The full 64-bit canonical forms of the stack pointers (RSP) for privilege levels 0-2.
     /// The stack pointers used when a privilege level change occurs from a lower privilege level to a higher one.
@@ -20,10 +20,12 @@ pub struct TaskStateSegment {
     reserved_3: u64,
     reserved_4: u16,
     /// The 16-bit offset to the I/O permission bit map from the 64-bit TSS base.
-    pub iomap_base: u16,
+    iomap_base: u16,
+    pub iomap: [u8; N],
+    iomap_last_byte: u8,
 }
 
-impl TaskStateSegment {
+impl<const N: usize> TaskStateSegment<N> {
     /// Creates a new TSS with zeroed privilege and interrupt stack table and an
     /// empty I/O-Permission Bitmap.
     ///
@@ -31,11 +33,13 @@ impl TaskStateSegment {
     /// `size_of::<TaskStateSegment>() - 1`, this means that `iomap_base` is
     /// initialized to `size_of::<TaskStateSegment>()`.
     #[inline]
-    pub const fn new() -> TaskStateSegment {
+    pub const fn new() -> Self {
         TaskStateSegment {
             privilege_stack_table: [VirtAddr::zero(); 3],
             interrupt_stack_table: [VirtAddr::zero(); 7],
-            iomap_base: size_of::<TaskStateSegment>() as u16,
+            iomap_base: offset_of!(Self, iomap) as u16,
+            iomap: [u8::MAX; N],
+            iomap_last_byte: u8::MAX,
             reserved_1: 0,
             reserved_2: 0,
             reserved_3: 0,
@@ -44,7 +48,7 @@ impl TaskStateSegment {
     }
 }
 
-impl Default for TaskStateSegment {
+impl<const N: usize> Default for TaskStateSegment<N> {
     #[inline]
     fn default() -> Self {
         Self::new()
@@ -59,6 +63,6 @@ mod tests {
     pub fn check_tss_size() {
         // Per the SDM, the minimum size of a TSS is 0x68 bytes, giving a
         // minimum limit of 0x67.
-        assert_eq!(size_of::<TaskStateSegment>(), 0x68);
+        assert_eq!(size_of::<TaskStateSegment<0>>(), 0x68);
     }
 }

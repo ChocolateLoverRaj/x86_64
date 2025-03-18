@@ -426,7 +426,7 @@ impl Descriptor {
     /// Then, each of these descriptors should be placed in a GDT (which can
     /// either be global or per-CPU).
     #[inline]
-    pub fn tss_segment(tss: &'static TaskStateSegment) -> Descriptor {
+    pub fn tss_segment<const N: usize>(tss: &'static TaskStateSegment<N>) -> Descriptor {
         // SAFETY: The pointer is derived from a &'static reference, which ensures its validity.
         unsafe { Self::tss_segment_unchecked(tss) }
     }
@@ -438,7 +438,9 @@ impl Descriptor {
     /// The caller must ensure that the passed pointer is valid for as long as the descriptor is
     /// being used.
     #[inline]
-    pub unsafe fn tss_segment_unchecked(tss: *const TaskStateSegment) -> Descriptor {
+    pub unsafe fn tss_segment_unchecked<const N: usize>(
+        tss: *const TaskStateSegment<N>,
+    ) -> Descriptor {
         use self::DescriptorFlags as Flags;
         use core::mem::size_of;
 
@@ -449,7 +451,7 @@ impl Descriptor {
         low.set_bits(16..40, ptr.get_bits(0..24));
         low.set_bits(56..64, ptr.get_bits(24..32));
         // limit (the `-1` in needed since the bound is inclusive)
-        low.set_bits(0..16, (size_of::<TaskStateSegment>() - 1) as u64);
+        low.set_bits(0..16, (size_of::<TaskStateSegment<N>>() - 1) as u64);
         // type (0b1001 = available 64-bit tss)
         low.set_bits(40..44, 0b1001);
 
@@ -490,7 +492,7 @@ mod tests {
         gdt
     }
 
-    static TSS: TaskStateSegment = TaskStateSegment::new();
+    static TSS: TaskStateSegment<0> = TaskStateSegment::new();
 
     fn make_full_gdt() -> GlobalDescriptorTable {
         let mut gdt = make_six_entry_gdt();
