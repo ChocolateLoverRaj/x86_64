@@ -15,6 +15,8 @@ use core::sync::atomic::{AtomicU64 as EntryValue, Ordering};
 #[cfg(not(all(feature = "instructions", target_arch = "x86_64")))]
 use u64 as EntryValue;
 
+use super::tss::ReadyTssPointer;
+
 /// 8-byte entry in a descriptor table.
 ///
 /// A [`GlobalDescriptorTable`] (or LDT) is an array of these entries, and
@@ -429,6 +431,12 @@ impl Descriptor {
     pub fn tss_segment<const N: usize>(tss: &'static TaskStateSegment<N>) -> Descriptor {
         // SAFETY: The pointer is derived from a &'static reference, which ensures its validity.
         unsafe { Self::tss_segment_unchecked(tss) }
+    }
+
+    /// Creates a TSS system descriptor for a TSS which you can modify the I/O bitmap of later, but not other parts of it.
+    pub fn tss_segment_from_pointer<const N: usize>(tss_pointer: ReadyTssPointer<N>) -> Descriptor {
+        // SAFETY: The pointer is derived from a &'static reference, which ensures its validity, and only the I/O bitmap is allowed to be changed later.
+        unsafe { Self::tss_segment_unchecked(tss_pointer.0) }
     }
 
     /// Similar to [`Descriptor::tss_segment`], but unsafe since it does not enforce a lifetime

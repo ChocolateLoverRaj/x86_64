@@ -1,7 +1,7 @@
 //! Provides a type for the task state segment structure.
 
 use crate::VirtAddr;
-use core::mem::{offset_of, size_of};
+use core::mem::offset_of;
 
 /// In 64-bit mode the TSS holds information that is not
 /// directly related to the task-switch mechanism,
@@ -21,13 +21,13 @@ pub struct TaskStateSegment<const N: usize> {
     reserved_4: u16,
     /// The 16-bit offset to the I/O permission bit map from the 64-bit TSS base.
     iomap_base: u16,
+    /// The I/O Permission bitmap, where each bit corresponds to a `u16` port address, and a value of `0` means that Ring 3 is allowed to access the port and `1` means it's not allowed.
     pub iomap: [u8; N],
     iomap_last_byte: u8,
 }
 
 impl<const N: usize> TaskStateSegment<N> {
-    /// Creates a new TSS with zeroed privilege and interrupt stack table and an
-    /// empty I/O-Permission Bitmap.
+    /// Creates a new TSS with zeroed privilege and interrupt stack table and a I/O-Permission Bitmap with all bits set to `1` (deny).
     ///
     /// As we always set the TSS segment limit to
     /// `size_of::<TaskStateSegment>() - 1`, this means that `iomap_base` is
@@ -46,7 +46,22 @@ impl<const N: usize> TaskStateSegment<N> {
             reserved_4: 0,
         }
     }
+
+    /// Consumes access to self, returning a pointer guaranteeing that the TSS will stay there forever (static lifetime), and a reference to modify the iomap
+    pub const fn ready_to_activate(
+        &'static mut self,
+    ) -> (ReadyTssPointer<N>, &'static mut [u8; N]) {
+        (
+            ReadyTssPointer(self),
+            // Safety: a u8 array does not require any alignment
+            unsafe { &mut *(&raw mut self.iomap) },
+        )
+    }
 }
+
+/// Used to be sure that the TSS pointer points to a static TSS (so the pointer will not become invalid)
+#[derive(Debug)]
+pub struct ReadyTssPointer<const N: usize>(pub(crate) *mut TaskStateSegment<N>);
 
 impl<const N: usize> Default for TaskStateSegment<N> {
     #[inline]
