@@ -7,7 +7,7 @@ use core::mem::offset_of;
 /// directly related to the task-switch mechanism,
 /// but is used for stack switching when an interrupt or exception occurs.
 #[derive(Debug, Clone, Copy)]
-#[repr(C, packed(4))]
+#[repr(C, packed)]
 pub struct TaskStateSegment<const N: usize> {
     reserved_1: u32,
     /// The full 64-bit canonical forms of the stack pointers (RSP) for privilege levels 0-2.
@@ -78,6 +78,7 @@ mod tests {
     pub fn check_tss_size() {
         // Per the SDM, the minimum size of a TSS is 0x68 bytes, giving a
         // minimum limit of 0x67.
-        assert_eq!(size_of::<TaskStateSegment<0>>(), 0x68);
+        // But because we have the last byte of iomap, that increases the size by 1 byte
+        assert_eq!(size_of::<TaskStateSegment<0>>(), 0x69);
     }
 }
