@@ -809,35 +809,18 @@ impl<F> Entry<F> {
         }
     }
 
-    /// Sets the handler address for the IDT entry and sets the following defaults:
-    ///   - The code selector is the code segment currently active in the CPU
-    ///   - The present bit is set
-    ///   - Interrupts are disabled on handler invocation
-    ///   - The privilege level (DPL) is [`PrivilegeLevel::Ring0`]
-    ///   - No IST is configured (existing stack will be used)
-    ///
-    /// The function returns a mutable reference to the entry's options that allows
-    /// further customization.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that `addr` is the address of a valid interrupt handler function,
-    /// and the signature of such a function is correct for the entry type.
-    #[cfg(all(feature = "instructions", target_arch = "x86_64"))]
-    #[inline]
-    pub unsafe fn set_handler_addr(&mut self, addr: VirtAddr) -> &mut EntryOptions {
-        use crate::instructions::segmentation::{Segment, CS};
-
+    /// Returns an IDT entry with the address of the handler function and options
+    pub const fn from_handler_addr(addr: VirtAddr, options: EntryOptions) -> Self {
         let addr = addr.as_u64();
-        self.pointer_low = addr as u16;
-        self.pointer_middle = (addr >> 16) as u16;
-        self.pointer_high = (addr >> 32) as u32;
 
-        self.options = EntryOptions::minimal();
-        // SAFETY: The current CS is a valid, long-mode code segment.
-        unsafe { self.options.set_code_selector(CS::get_reg()) };
-        self.options.set_present(true);
-        &mut self.options
+        Self {
+            pointer_low: addr as u16,
+            pointer_middle: (addr >> 16) as u16,
+            pointer_high: (addr >> 32) as u32,
+            options,
+            reserved: 0,
+            phantom: PhantomData,
+        }
     }
 
     /// Returns the virtual address of this IDT entry's handler function.
@@ -867,8 +850,8 @@ impl<F: HandlerFuncType> Entry<F> {
     /// This method is only usable with the `abi_x86_interrupt` feature enabled. Without it, the
     /// unsafe [`Entry::set_handler_addr`] method has to be used instead.
     #[inline]
-    pub fn set_handler_fn(&mut self, handler: F) -> &mut EntryOptions {
-        unsafe { self.set_handler_addr(handler.to_virt_addr()) }
+    pub fn from_handler_fn(handler: F, options: EntryOptions) -> Self {
+        Self::from_handler_addr(handler.to_virt_addr(), options)
     }
 }
 
@@ -937,6 +920,15 @@ impl EntryOptions {
         EntryOptions {
             cs: SegmentSelector(0),
             bits: 0b1110_0000_0000, // Default to a 64-bit Interrupt Gate
+        }
+    }
+
+    /// Creates a minimal options field with all the must-be-one bits set and the CS selector set to the provided value. This
+    /// means the IST and DPL field are all 0.
+    pub const fn present_with_cs(cs: SegmentSelector) -> Self {
+        EntryOptions {
+            cs,
+            bits: 0b1000_1110_0000_0000, // Default to a 64-bit Interrupt Gate
         }
     }
 
@@ -1490,7 +1482,7 @@ macro_rules! set_general_handler_recursive_bits {
 
         #[allow(unreachable_code)]
         if $range.contains(&IDX) {
-            $crate::set_general_handler_entry!($idt, $handler, IDX, $bit7, $bit6, $bit5, $bit4, $bit3, $bit2, $bit1, $bit0);
+            // $crate::set_general_handler_entry!($idt, $handler, IDX, $bit7, $bit6, $bit5, $bit4, $bit3, $bit2, $bit1, $bit0);
         }
     }};
     // otherwise recursively invoke the macro adding one more bit
@@ -1500,136 +1492,136 @@ macro_rules! set_general_handler_recursive_bits {
     };
 }
 
-#[cfg(all(
-    feature = "instructions",
-    feature = "abi_x86_interrupt",
-    target_arch = "x86_64"
-))]
-#[macro_export]
-#[doc(hidden)]
-macro_rules! set_general_handler_entry {
-    // special case entries that don't have the `HandlerFunc` signature
-    ($idt:expr, $handler:ident, $idx:expr, 0, 0, 0, 0, 1, 0, 0, 0) => {{
-        extern "x86-interrupt" fn handler(
-            frame: $crate::structures::idt::InterruptStackFrame,
-            error_code: u64,
-        ) -> ! {
-            $handler(frame, $idx.into(), Some(error_code));
-            panic!("General handler returned on double fault");
-        }
-        $idt.double_fault.set_handler_fn(handler);
-    }};
-    ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 0, 1, 0, 1, 0) => {{
-        extern "x86-interrupt" fn handler(
-            frame: $crate::structures::idt::InterruptStackFrame,
-            error_code: u64,
-        ) {
-            $handler(frame, $idx.into(), Some(error_code));
-        }
-        $idt.invalid_tss.set_handler_fn(handler);
-    }};
-    ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 0, 1, 0, 1, 1) => {{
-        extern "x86-interrupt" fn handler(
-            frame: $crate::structures::idt::InterruptStackFrame,
-            error_code: u64,
-        ) {
-            $handler(frame, $idx.into(), Some(error_code));
-        }
-        $idt.segment_not_present.set_handler_fn(handler);
-    }};
-    ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 0, 1, 1, 0, 0) => {{
-        extern "x86-interrupt" fn handler(
-            frame: $crate::structures::idt::InterruptStackFrame,
-            error_code: u64,
-        ) {
-            $handler(frame, $idx.into(), Some(error_code));
-        }
-        $idt.stack_segment_fault.set_handler_fn(handler);
-    }};
-    ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 0, 1, 1, 0, 1) => {{
-        extern "x86-interrupt" fn handler(
-            frame: $crate::structures::idt::InterruptStackFrame,
-            error_code: u64,
-        ) {
-            $handler(frame, $idx.into(), Some(error_code));
-        }
-        $idt.general_protection_fault.set_handler_fn(handler);
-    }};
-    ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 0, 1, 1, 1, 0) => {{
-        extern "x86-interrupt" fn handler(
-            frame: $crate::structures::idt::InterruptStackFrame,
-            error_code: $crate::structures::idt::PageFaultErrorCode,
-        ) {
-            $handler(frame, IDX.into(), Some(error_code.bits()));
-        }
-        $idt.page_fault.set_handler_fn(handler);
-    }};
-    ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 1, 0, 0, 0, 1) => {{
-        extern "x86-interrupt" fn handler(
-            frame: $crate::structures::idt::InterruptStackFrame,
-            error_code: u64,
-        ) {
-            $handler(frame, $idx.into(), Some(error_code));
-        }
-        $idt.alignment_check.set_handler_fn(handler);
-    }};
-    ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 1, 0, 0, 1, 0) => {{
-        extern "x86-interrupt" fn handler(
-            frame: $crate::structures::idt::InterruptStackFrame,
-        ) -> ! {
-            $handler(frame, $idx.into(), None);
-            panic!("General handler returned on machine check exception");
-        }
-        $idt.machine_check.set_handler_fn(handler);
-    }};
-    ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 1, 0, 1, 0, 1) => {{
-        extern "x86-interrupt" fn handler(
-            frame: $crate::structures::idt::InterruptStackFrame,
-            error_code: u64,
-        ) {
-            $handler(frame, $idx.into(), Some(error_code));
-        }
-        $idt.cp_protection_exception.set_handler_fn(handler);
-    }};
-    ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 1, 1, 1, 0, 1) => {
-        extern "x86-interrupt" fn handler(
-            frame: $crate::structures::idt::InterruptStackFrame,
-            error_code: u64,
-        ) {
-            $handler(frame, $idx.into(), Some(error_code));
-        }
-        $idt.vmm_communication_exception.set_handler_fn(handler);
-    };
-    ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 1, 1, 1, 1, 0) => {{
-        extern "x86-interrupt" fn handler(
-            frame: $crate::structures::idt::InterruptStackFrame,
-            error_code: u64,
-        ) {
-            $handler(frame, $idx.into(), Some(error_code));
-        }
-        $idt.security_exception.set_handler_fn(handler);
-    }};
+// #[cfg(all(
+//     feature = "instructions",
+//     feature = "abi_x86_interrupt",
+//     target_arch = "x86_64"
+// ))]
+// #[macro_export]
+// #[doc(hidden)]
+// macro_rules! set_general_handler_entry {
+//     // special case entries that don't have the `HandlerFunc` signature
+//     ($idt:expr, $handler:ident, $idx:expr, 0, 0, 0, 0, 1, 0, 0, 0) => {{
+//         extern "x86-interrupt" fn handler(
+//             frame: $crate::structures::idt::InterruptStackFrame,
+//             error_code: u64,
+//         ) -> ! {
+//             $handler(frame, $idx.into(), Some(error_code));
+//             panic!("General handler returned on double fault");
+//         }
+//         $idt.double_fault = Entry::from_handler_fn(handler, Default::default());
+//     }};
+//     ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 0, 1, 0, 1, 0) => {{
+//         extern "x86-interrupt" fn handler(
+//             frame: $crate::structures::idt::InterruptStackFrame,
+//             error_code: u64,
+//         ) {
+//             $handler(frame, $idx.into(), Some(error_code));
+//         }
+//         $idt.invalid_tss.set_handler_fn(handler);
+//     }};
+//     ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 0, 1, 0, 1, 1) => {{
+//         extern "x86-interrupt" fn handler(
+//             frame: $crate::structures::idt::InterruptStackFrame,
+//             error_code: u64,
+//         ) {
+//             $handler(frame, $idx.into(), Some(error_code));
+//         }
+//         $idt.segment_not_present.set_handler_fn(handler);
+//     }};
+//     ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 0, 1, 1, 0, 0) => {{
+//         extern "x86-interrupt" fn handler(
+//             frame: $crate::structures::idt::InterruptStackFrame,
+//             error_code: u64,
+//         ) {
+//             $handler(frame, $idx.into(), Some(error_code));
+//         }
+//         $idt.stack_segment_fault.set_handler_fn(handler);
+//     }};
+//     ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 0, 1, 1, 0, 1) => {{
+//         extern "x86-interrupt" fn handler(
+//             frame: $crate::structures::idt::InterruptStackFrame,
+//             error_code: u64,
+//         ) {
+//             $handler(frame, $idx.into(), Some(error_code));
+//         }
+//         $idt.general_protection_fault.set_handler_fn(handler);
+//     }};
+//     ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 0, 1, 1, 1, 0) => {{
+//         extern "x86-interrupt" fn handler(
+//             frame: $crate::structures::idt::InterruptStackFrame,
+//             error_code: $crate::structures::idt::PageFaultErrorCode,
+//         ) {
+//             $handler(frame, IDX.into(), Some(error_code.bits()));
+//         }
+//         $idt.page_fault.set_handler_fn(handler);
+//     }};
+//     ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 1, 0, 0, 0, 1) => {{
+//         extern "x86-interrupt" fn handler(
+//             frame: $crate::structures::idt::InterruptStackFrame,
+//             error_code: u64,
+//         ) {
+//             $handler(frame, $idx.into(), Some(error_code));
+//         }
+//         $idt.alignment_check.set_handler_fn(handler);
+//     }};
+//     ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 1, 0, 0, 1, 0) => {{
+//         extern "x86-interrupt" fn handler(
+//             frame: $crate::structures::idt::InterruptStackFrame,
+//         ) -> ! {
+//             $handler(frame, $idx.into(), None);
+//             panic!("General handler returned on machine check exception");
+//         }
+//         $idt.machine_check.set_handler_fn(handler);
+//     }};
+//     ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 1, 0, 1, 0, 1) => {{
+//         extern "x86-interrupt" fn handler(
+//             frame: $crate::structures::idt::InterruptStackFrame,
+//             error_code: u64,
+//         ) {
+//             $handler(frame, $idx.into(), Some(error_code));
+//         }
+//         $idt.cp_protection_exception.set_handler_fn(handler);
+//     }};
+//     ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 1, 1, 1, 0, 1) => {
+//         extern "x86-interrupt" fn handler(
+//             frame: $crate::structures::idt::InterruptStackFrame,
+//             error_code: u64,
+//         ) {
+//             $handler(frame, $idx.into(), Some(error_code));
+//         }
+//         $idt.vmm_communication_exception.set_handler_fn(handler);
+//     };
+//     ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 1, 1, 1, 1, 0) => {{
+//         extern "x86-interrupt" fn handler(
+//             frame: $crate::structures::idt::InterruptStackFrame,
+//             error_code: u64,
+//         ) {
+//             $handler(frame, $idx.into(), Some(error_code));
+//         }
+//         $idt.security_exception.set_handler_fn(handler);
+//     }};
 
-    // reserved_1
-    ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 0, 1, 1, 1, 1) => {};
-    // reserved_2
-    ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 1, 0, 1, 1, 0) => {};
-    ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 1, 0, 1, 1, 1) => {};
-    ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 1, 1, 0, 0, 0) => {};
-    ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 1, 1, 0, 0, 1) => {};
-    ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 1, 1, 0, 1, 0) => {};
-    ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 1, 1, 0, 1, 1) => {};
-    // reserved_3
-    ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 1, 1, 1, 1, 1) => {};
+//     // reserved_1
+//     ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 0, 1, 1, 1, 1) => {};
+//     // reserved_2
+//     ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 1, 0, 1, 1, 0) => {};
+//     ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 1, 0, 1, 1, 1) => {};
+//     ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 1, 1, 0, 0, 0) => {};
+//     ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 1, 1, 0, 0, 1) => {};
+//     ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 1, 1, 0, 1, 0) => {};
+//     ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 1, 1, 0, 1, 1) => {};
+//     // reserved_3
+//     ($idt:expr, $handler:ident, $idx:ident, 0, 0, 0, 1, 1, 1, 1, 1) => {};
 
-    // set entries with `HandlerFunc` signature
-    ($idt:expr, $handler:ident, $idx:ident $(, $_bits:tt)*) => {{
-        extern "x86-interrupt" fn handler(frame: $crate::structures::idt::InterruptStackFrame) {
-            $handler(frame, $idx.into(), None);
-        }
-        $idt[$idx].set_handler_fn(handler);
-    }};
-}
+//     // set entries with `HandlerFunc` signature
+//     ($idt:expr, $handler:ident, $idx:ident $(, $_bits:tt)*) => {{
+//         extern "x86-interrupt" fn handler(frame: $crate::structures::idt::InterruptStackFrame) {
+//             $handler(frame, $idx.into(), None);
+//         }
+//         $idt[$idx].set_handler_fn(handler);
+//     }};
+// }
 
 #[cfg(test)]
 mod test {
