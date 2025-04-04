@@ -932,6 +932,14 @@ impl EntryOptions {
         }
     }
 
+    /// Creates a minimal options field with all the must-be-one bits set, the CS selector set to the provided value, and the IST set to the provided value.
+    /// This means the DPL field is 0.
+    pub fn present_with_cs_and_ist(cs: SegmentSelector, index: u16) -> Self {
+        let mut options = Self::present_with_cs(cs);
+        unsafe { options.set_stack_index(index) };
+        options
+    }
+
     /// Set the code segment that will be used by this interrupt.
     ///
     /// ## Safety
